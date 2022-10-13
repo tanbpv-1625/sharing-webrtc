@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import WebRTC from "./components/WebRTC.vue";
 </script>
 
