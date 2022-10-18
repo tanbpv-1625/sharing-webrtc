@@ -3,7 +3,6 @@ import { onMounted, ref } from "vue";
 
 const isDisableStart = ref(false);
 const isDisableCall = ref(true);
-const isDisableHangUp = ref(true);
 
 let localVideo: HTMLVideoElement | null = null;
 let remoteVideo: HTMLVideoElement | null = null;
@@ -15,7 +14,7 @@ let remotePeerConnection: RTCPeerConnection | null = null;
 
 onMounted(() => {
   localVideo = document.getElementById("localVideo") as HTMLVideoElement;
-  remoteVideo = document.getElementById("removeVideo") as HTMLVideoElement;
+  remoteVideo = document.getElementById("remoteVideo") as HTMLVideoElement;
 });
 
 const constraints = {
@@ -29,36 +28,45 @@ function CallAction() {
     "connectionstatechange",
     handleConnectionChange
   );
+
+  remotePeerConnection = new RTCPeerConnection();
+  remotePeerConnection.addEventListener("icecandidate", () => handleConnection
+  );
+  remotePeerConnection.addEventListener(
+    "connectionstatechange",
+    handleConnectionChange
+  );
+  localStream!.getTracks().forEach((track) => localPeerConnection!.addTrack(track, localStream!));
+  remotePeerConnection.addEventListener('track', gotRemoteMediaStream);
+
   localPeerConnection
     .createOffer({ offerToReceiveVideo: true })
     .then(createOffer);
 }
 
 async function startAction() {
-
+  if (!localVideo) return;
+  
   navigator.mediaDevices
     .getUserMedia(constraints)
     .then((mediaStream) => {
-      localVideo && localVideo.srcObject = mediaStream;
+      localVideo!.srcObject = mediaStream;
       localStream = mediaStream;
       isDisableCall.value = false;
-      isDisableHangUp.value = false;
       isDisableStart.value = true;
-      addStream(mediaStream);
-
-      console.log("stream is ready");
+      console.log(mediaStream);
+      
     })
-    .catch(() => "navigator.mediaDevices not support");
+}
+
+function gotRemoteMediaStream(e: RTCTrackEvent) {
+    remoteVideo!.srcObject = e.streams[0];
 }
 
 function createOffer(description: RTCSessionDescriptionInit) {
-  console.log("localPeerConnection setLocalDescription");
   localPeerConnection?.setLocalDescription(description);
-
-  console.log("remotePeerConnection setRemoteDescription");
   remotePeerConnection?.setRemoteDescription(description);
 
-  console.log("remotePeerConnection createAnswer");
   remotePeerConnection?.createAnswer().then(createAnswer);
 }
 
@@ -83,8 +91,8 @@ function handleConnection(event: RTCPeerConnectionIceEvent) {
 
     otherPeer
       ?.addIceCandidate(newIceCandidate)
-      .then(() => handleConnectionSuccess(peerConnection))
-      .catch((error) => handleConnectionFailure(peerConnection, error));
+      // .then(() => handleConnectionSuccess(peerConnection))
+      // .catch((error) => handleConnectionFailure(peerConnection, error));
   }
 }
 
@@ -96,15 +104,6 @@ function handleConnectionFailure(
 ) {}
 
 function handleConnectionChange() {}
-
-function addStream(stream: MediaStream) {
-  stream
-    .getTracks()
-    .forEach(
-      (track) =>
-        localPeerConnection && localPeerConnection.addTrack(track, stream)
-    );
-}
 </script>
 
 <script lang="ts">
@@ -112,24 +111,33 @@ export default {};
 </script>
 
 <template>
-  <video id="localVideo" autoplay playsinline class="video" />
-  <video id="remoteVideo" autoplay playsinline class="video" />
+  <div class="wrapper-video">
+    <div>
+      <video id="localVideo" autoplay playsinline class="video" />
+      <div>
+        <button :disabled="isDisableStart" @click="startAction()" id="startButton">
+          Start
+        </button>
+        <button :disabled="isDisableCall" id="callButton" @click="CallAction()">
+          Call
+        </button>
+      </div>
+  
+    </div>
+    <video id="remoteVideo" autoplay playsinline class="video" />
 
-  <div>
-    <button :disabled="isDisableStart" @click="startAction()" id="startButton">
-      Start
-    </button>
-    <button :disabled="isDisableCall" id="callButton" @click="CallAction()">
-      Call
-    </button>
-    <button id="hangupButton" :disabled="isDisableHangUp">Hang Up</button>
   </div>
+
 </template>
 
-<!-- Add "scoped" attribute to limit CSS to this component only -->
 <style scoped>
+
+.wrapper-video {
+  display: flex;
+}
 .video {
   max-width: 100%;
   width: 320px;
+  height: 240px;
 }
 </style>
