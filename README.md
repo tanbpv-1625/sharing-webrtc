@@ -13,4 +13,13 @@ Since TypeScript cannot handle type information for `.vue` imports, they are shi
 1. Run `Extensions: Show Built-in Extensions` from VS Code's command palette, look for `TypeScript and JavaScript Language Features`, then right click and select `Disable (Workspace)`. By default, Take Over mode will enable itself if the default TypeScript extension is disabled.
 2. Reload the VS Code window by running `Developer: Reload Window` from the command palette.
 
-You can learn more about Take Over mode [here](https://github.com/johnsoncodehk/volar/discussions/471).
+You can learn more about Take Over mode [here](https://github.com/johnsoncodehk/volar/discussions/471)
+
+# Firebase signling
+
+1. Go to https://console.firebase.google.com/ => Add project
+2. Add Firebase to your web app: Open a new project => Select web
+<img width="1439" alt="Screen Shot 2022-10-19 at 15 35 12" src="https://user-images.githubusercontent.com/51943633/196640166-ca740fa8-940e-4ef8-b1f4-4e9dde288ac0.png">
+3. Set up Cloud Storage: Select storage => select "Start in test mode" => Next => Select Cloud Storage location => Done
+<img width="1436" alt="Screen Shot 2022-10-19 at 15 40 35" src="https://user-images.githubusercontent.com/51943633/196641392-03e95202-3e99-40d6-a69f-6d70c0acda56.png">
+4. Select Project settings => copy firebaseConfig to your app.
