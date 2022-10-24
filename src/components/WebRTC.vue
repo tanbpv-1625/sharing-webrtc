@@ -1,109 +1,152 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch, reactive } from "vue";
+import firebase from "firebase/app";
+import "firebase/firestore";
 
-const isDisableStart = ref(false);
-const isDisableCall = ref(true);
+const callInput = ref("");
 
-let localVideo: HTMLVideoElement | null = null;
 let remoteVideo: HTMLVideoElement | null = null;
+let localVideo: HTMLVideoElement | null = null;
 let localStream: MediaStream | null = null;
 let remoteStream: MediaStream | null = null;
 
 let localPeerConnection: RTCPeerConnection | null = null;
-let remotePeerConnection: RTCPeerConnection | null = null;
 
-onMounted(() => {
-  localVideo = document.getElementById("localVideo") as HTMLVideoElement;
-  remoteVideo = document.getElementById("remoteVideo") as HTMLVideoElement;
-});
-
-const constraints = {
-  video: true,
+const firebaseConfig = {
+  apiKey: "AIzaSyCKoRejb4GtZmbfkicJ-jBLdSV73vyRNWU",
+  authDomain: "sharing-webrtc-4abe3.firebaseapp.com",
+  projectId: "sharing-webrtc-4abe3",
+  storageBucket: "sharing-webrtc-4abe3.appspot.com",
+  messagingSenderId: "1067733797158",
+  appId: "1:1067733797158:web:075d1cea3d99c05f2459e7",
+  measurementId: "G-44TW5F0W9P",
 };
 
-function CallAction() {
-  localPeerConnection = new RTCPeerConnection();
-  localPeerConnection.addEventListener("icecandidate", handleConnection);
-  localPeerConnection.addEventListener(
-    "connectionstatechange",
-    handleConnectionChange
-  );
-
-  remotePeerConnection = new RTCPeerConnection();
-  remotePeerConnection.addEventListener("icecandidate", () => handleConnection
-  );
-  remotePeerConnection.addEventListener(
-    "connectionstatechange",
-    handleConnectionChange
-  );
-  localStream!.getTracks().forEach((track) => localPeerConnection!.addTrack(track, localStream!));
-  remotePeerConnection.addEventListener('track', gotRemoteMediaStream);
-
-  localPeerConnection
-    .createOffer({ offerToReceiveVideo: true })
-    .then(createOffer);
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
 }
+
+const firestore = firebase.firestore();
+
+const serversConfig = {
+  iceServers: [
+    {
+      urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"],
+    },
+  ],
+  iceCandidatePoolSize: 10,
+};
 
 async function startAction() {
-  if (!localVideo) return;
-  
-  navigator.mediaDevices
-    .getUserMedia(constraints)
-    .then((mediaStream) => {
-      localVideo!.srcObject = mediaStream;
-      localStream = mediaStream;
-      isDisableCall.value = false;
-      isDisableStart.value = true;
-      console.log(mediaStream);
-      
-    })
+  localVideo = document.getElementById("localVideo") as HTMLVideoElement;
+  remoteVideo = document.getElementById("remoteVideo") as HTMLVideoElement;
+  remoteStream = new MediaStream();
+
+  localPeerConnection = new RTCPeerConnection(serversConfig);
+
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true,
+  });
+
+  localStream
+    .getTracks()
+    .forEach((track) => localPeerConnection?.addTrack(track, localStream!));
+
+  localPeerConnection!.ontrack = (event: RTCTrackEvent) => {
+    event.streams[0]
+      .getTracks()
+      .forEach((track) => remoteStream?.addTrack(track));
+
+    remoteVideo!.srcObject = remoteStream;
+  };
+
+  localVideo!.srcObject = localStream;
 }
 
-function gotRemoteMediaStream(e: RTCTrackEvent) {
-    remoteVideo!.srcObject = e.streams[0];
+async function call() {
+  // Reference Firestore collections for signaling
+  const callDoc = firestore.collection("calls").doc();
+  const offerCandidates = callDoc.collection("offerCandidates");
+  const answerCandidates = callDoc.collection("answerCandidates");
+
+  callInput.value = callDoc.id;
+
+  // Get candidates for caller, save to db
+  localPeerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+    event.candidate && offerCandidates.add(event.candidate.toJSON());
+  };
+
+  // Create Offer
+  const offerDescription = await localPeerConnection?.createOffer();
+  await localPeerConnection?.setLocalDescription(offerDescription);
+
+  const offer = {
+    sdp: offerDescription!.sdp,
+    type: offerDescription!.type,
+  };
+
+  await callDoc.set({ offer });
+
+  // Listen for remote answer
+  callDoc.onSnapshot((snapshot) => {
+    const data = snapshot.data();
+
+    if (!localPeerConnection?.currentRemoteDescription && data?.answer) {
+      localPeerConnection?.setRemoteDescription(
+        new RTCSessionDescription(data.answer)
+      );
+    }
+  });
+
+  // Listen for remote ICE candidates
+  answerCandidates.onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === "added") {
+        localPeerConnection?.addIceCandidate(
+          new RTCIceCandidate(change.doc.data())
+        );
+      }
+    });
+  });
 }
 
-function createOffer(description: RTCSessionDescriptionInit) {
-  localPeerConnection?.setLocalDescription(description);
-  remotePeerConnection?.setRemoteDescription(description);
+async function answer() {
+  const callId = callInput.value;
 
-  remotePeerConnection?.createAnswer().then(createAnswer);
+  const callDoc = firestore.collection("calls").doc(callId);
+  const offerCandidates = firestore.collection("offerCandidates");
+  const answerCandidates = firestore.collection("answerCandidates");
+
+  localPeerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+    event.candidate && answerCandidates.add(event.candidate.toJSON());
+  };
+
+  // Fetch data, then set the offer & answer
+  const callData = (await callDoc.get()).data();
+
+  const offerDescription = callData?.offer;
+  localPeerConnection?.setRemoteDescription(offerDescription);
+
+  const answerDescription = await localPeerConnection?.createAnswer();
+  localPeerConnection?.setLocalDescription(answerDescription);
+
+  const answer = {
+    type: answerDescription?.type,
+    sdp: answerDescription?.sdp,
+  };
+
+  await callDoc.update({ answer });
+
+  offerCandidates.onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === "added") {
+        let data = change.doc.data();
+        localPeerConnection?.addIceCandidate(new RTCIceCandidate(data));
+      }
+    });
+  });
 }
-
-function createAnswer(description: RTCSessionDescriptionInit) {
-  remotePeerConnection?.setLocalDescription(description);
-  localPeerConnection?.setRemoteDescription(description);
-}
-
-function getOther(connection: RTCPeerConnection) {
-  return connection === localPeerConnection
-    ? remotePeerConnection
-    : localPeerConnection;
-}
-
-function handleConnection(event: RTCPeerConnectionIceEvent) {
-  const peerConnection = event.target as RTCPeerConnection;
-  const iceCandidate = event.candidate;
-
-  if (iceCandidate) {
-    const newIceCandidate = new RTCIceCandidate(iceCandidate);
-    const otherPeer = getOther(peerConnection);
-
-    otherPeer
-      ?.addIceCandidate(newIceCandidate)
-      // .then(() => handleConnectionSuccess(peerConnection))
-      // .catch((error) => handleConnectionFailure(peerConnection, error));
-  }
-}
-
-function handleConnectionSuccess(peerConnection: RTCPeerConnection) {}
-
-function handleConnectionFailure(
-  peerConnection: RTCPeerConnection,
-  error: Error
-) {}
-
-function handleConnectionChange() {}
 </script>
 
 <script lang="ts">
@@ -115,25 +158,20 @@ export default {};
     <div>
       <video id="localVideo" autoplay playsinline class="video" />
       <div>
-        <button :disabled="isDisableStart" @click="startAction()" id="startButton">
-          Start
-        </button>
-        <button :disabled="isDisableCall" id="callButton" @click="CallAction()">
-          Call
-        </button>
+        <button @click="startAction()" id="startButton">Start</button>
+        <button id="callButton" @click="call()">Call</button>
       </div>
-  
     </div>
-    <video id="remoteVideo" autoplay playsinline class="video" />
-
   </div>
-
+  <video id="remoteVideo" autoplay playsinline class="video" />
+  <input type="text" name="callInput" v-model="callInput" />
+  <button id="callButton" @click="answer()">Answer</button>
 </template>
 
 <style scoped>
-
 .wrapper-video {
   display: flex;
+  flex-direction: column;
 }
 .video {
   max-width: 100%;
