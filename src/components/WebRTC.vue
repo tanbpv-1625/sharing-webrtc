@@ -54,11 +54,7 @@ async function startAction() {
     .forEach((track) => localPeerConnection?.addTrack(track, localStream!));
 
   localPeerConnection!.ontrack = (event: RTCTrackEvent) => {
-    event.streams[0]
-      .getTracks()
-      .forEach((track) => remoteStream?.addTrack(track));
-
-    remoteVideo!.srcObject = remoteStream;
+    remoteVideo!.srcObject = event.streams[0];
   };
 
   localVideo!.srcObject = localStream;
