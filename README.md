@@ -18,8 +18,17 @@ You can learn more about Take Over mode [here](https://github.com/johnsoncodehk/
 # Firebase signling
 
 1. Go to https://console.firebase.google.com/ => Add project
+
 2. Add Firebase to your web app: Open a new project => Select web
+
 <img width="1439" alt="Screen Shot 2022-10-19 at 15 35 12" src="https://user-images.githubusercontent.com/51943633/196640166-ca740fa8-940e-4ef8-b1f4-4e9dde288ac0.png">
+
 3. Set up Cloud Storage: Select storage => select "Start in test mode" => Next => Select Cloud Storage location => Done
+
 <img width="1436" alt="Screen Shot 2022-10-19 at 15 40 35" src="https://user-images.githubusercontent.com/51943633/196641392-03e95202-3e99-40d6-a69f-6d70c0acda56.png">
+
 4. Select Project settings => copy firebaseConfig to your app.
+
+5. Enable API https://firebase.google.com/docs/projects/api/workflow_set-up-and-manage-project#enable-api
+
+6. Go to tab Indexes => Add index 'answerCandidates', 'offerCandidates', query scope 'Collection'.
