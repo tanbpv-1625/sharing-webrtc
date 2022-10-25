@@ -1,22 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { initializeApp } from "firebase/app";
+import { onMounted, ref, watch, reactive } from "vue";
+import firebase from "firebase/app";
 import "firebase/firestore";
-import {
-  collection,
-  setDoc,
-  addDoc,
-  doc,
-  getFirestore,
-  onSnapshot,
-  getDoc,
-  updateDoc,
-} from "firebase/firestore";
 
 const callInput = ref("");
 
-let localVideo: HTMLVideoElement | null = null;
 let remoteVideo: HTMLVideoElement | null = null;
+let localVideo: HTMLVideoElement | null = null;
 let localStream: MediaStream | null = null;
 let remoteStream: MediaStream | null = null;
 
@@ -32,8 +22,11 @@ const firebaseConfig = {
   measurementId: "G-44TW5F0W9P",
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
+
+const firestore = firebase.firestore();
 
 const serversConfig = {
   iceServers: [
@@ -44,12 +37,11 @@ const serversConfig = {
   iceCandidatePoolSize: 10,
 };
 
-onMounted(() => {
+async function startAction() {
   localVideo = document.getElementById("localVideo") as HTMLVideoElement;
   remoteVideo = document.getElementById("remoteVideo") as HTMLVideoElement;
-});
+  remoteStream = new MediaStream();
 
-async function startAction() {
   localPeerConnection = new RTCPeerConnection(serversConfig);
 
   localStream = await navigator.mediaDevices.getUserMedia({
@@ -62,28 +54,27 @@ async function startAction() {
     .forEach((track) => localPeerConnection?.addTrack(track, localStream!));
 
   localPeerConnection!.ontrack = (event: RTCTrackEvent) => {
-    console.log("event", event);
-
     event.streams[0]
       .getTracks()
       .forEach((track) => remoteStream?.addTrack(track));
+
+    remoteVideo!.srcObject = remoteStream;
   };
 
-  remoteVideo!.srcObject = remoteStream;
   localVideo!.srcObject = localStream;
 }
 
 async function call() {
   // Reference Firestore collections for signaling
-  const callDoc = doc(collection(db, "calls"));
-  const offerCandidates = collection(db, "offerCandidates");
-  const answerCandidates = collection(db, "answerCandidates");
+  const callDoc = firestore.collection("calls").doc();
+  const offerCandidates = callDoc.collection("offerCandidates");
+  const answerCandidates = callDoc.collection("answerCandidates");
 
   callInput.value = callDoc.id;
 
   // Get candidates for caller, save to db
   localPeerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-    event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
+    event.candidate && offerCandidates.add(event.candidate.toJSON());
   };
 
   // Create Offer
@@ -95,24 +86,26 @@ async function call() {
     type: offerDescription!.type,
   };
 
-  await setDoc(callDoc, { offer });
+  await callDoc.set({ offer });
 
   // Listen for remote answer
-  const snapshots = await onSnapshot(callDoc, (snapshot) => {
+  callDoc.onSnapshot((snapshot) => {
     const data = snapshot.data();
 
     if (!localPeerConnection?.currentRemoteDescription && data?.answer) {
-      const answerDescription = new RTCSessionDescription(data.answer);
-      localPeerConnection?.setRemoteDescription(answerDescription);
+      localPeerConnection?.setRemoteDescription(
+        new RTCSessionDescription(data.answer)
+      );
     }
   });
 
   // Listen for remote ICE candidates
-  onSnapshot(answerCandidates, (snapshot) => {
+  answerCandidates.onSnapshot((snapshot) => {
     snapshot.docChanges().forEach((change) => {
       if (change.type === "added") {
-        const candidate = new RTCIceCandidate(change.doc.data());
-        localPeerConnection?.addIceCandidate(candidate);
+        localPeerConnection?.addIceCandidate(
+          new RTCIceCandidate(change.doc.data())
+        );
       }
     });
   });
@@ -120,16 +113,17 @@ async function call() {
 
 async function answer() {
   const callId = callInput.value;
-  const callDoc = doc(collection(db, "calls"), callId);
-  const offerCandidates = collection(db, "offerCandidates");
-  const answerCandidates = collection(db, "answerCandidates");
+
+  const callDoc = firestore.collection("calls").doc(callId);
+  const offerCandidates = firestore.collection("offerCandidates");
+  const answerCandidates = firestore.collection("answerCandidates");
 
   localPeerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-    event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
+    event.candidate && answerCandidates.add(event.candidate.toJSON());
   };
 
   // Fetch data, then set the offer & answer
-  const callData = (await getDoc(callDoc)).data();
+  const callData = (await callDoc.get()).data();
 
   const offerDescription = callData?.offer;
   localPeerConnection?.setRemoteDescription(offerDescription);
@@ -142,9 +136,9 @@ async function answer() {
     sdp: answerDescription?.sdp,
   };
 
-  await updateDoc(callDoc, answer);
+  await callDoc.update({ answer });
 
-  onSnapshot(offerCandidates, (snapshot) => {
+  offerCandidates.onSnapshot((snapshot) => {
     snapshot.docChanges().forEach((change) => {
       if (change.type === "added") {
         let data = change.doc.data();
@@ -168,8 +162,8 @@ export default {};
         <button id="callButton" @click="call()">Call</button>
       </div>
     </div>
-    <video id="remoteVideo" autoplay playsinline class="video" />
   </div>
+  <video id="remoteVideo" autoplay playsinline class="video" />
   <input type="text" name="callInput" v-model="callInput" />
   <button id="callButton" @click="answer()">Answer</button>
 </template>
