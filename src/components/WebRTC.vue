@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, reactive } from "vue";
+import { ref } from "vue";
 import firebase from "firebase/app";
 import "firebase/firestore";
 
-const callInput = ref("");
+const roomInput = ref("");
 
 let remoteVideo: HTMLVideoElement | null = null;
 let localVideo: HTMLVideoElement | null = null;
 let localStream: MediaStream | null = null;
 let remoteStream: MediaStream | null = null;
 
-let localPeerConnection: RTCPeerConnection | null = null;
+let peerConnection: RTCPeerConnection | null = null;
 
 const firebaseConfig = {
   apiKey: "AIzaSyCKoRejb4GtZmbfkicJ-jBLdSV73vyRNWU",
@@ -31,7 +31,22 @@ const firestore = firebase.firestore();
 const serversConfig = {
   iceServers: [
     {
-      urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"],
+      urls: "stun:openrelay.metered.ca:80",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
     },
   ],
   iceCandidatePoolSize: 10,
@@ -42,7 +57,7 @@ async function startAction() {
   remoteVideo = document.getElementById("remoteVideo") as HTMLVideoElement;
   remoteStream = new MediaStream();
 
-  localPeerConnection = new RTCPeerConnection(serversConfig);
+  peerConnection = new RTCPeerConnection(serversConfig);
 
   localStream = await navigator.mediaDevices.getUserMedia({
     video: true,
@@ -51,97 +66,143 @@ async function startAction() {
 
   localStream
     .getTracks()
-    .forEach((track) => localPeerConnection?.addTrack(track, localStream!));
+    .forEach((track) => peerConnection?.addTrack(track, localStream!));
 
-  localPeerConnection!.ontrack = (event: RTCTrackEvent) => {
-    remoteVideo!.srcObject = event.streams[0];
-  };
-
+  remoteVideo.srcObject = remoteStream;
   localVideo!.srcObject = localStream;
 }
 
 async function call() {
-  // Reference Firestore collections for signaling
-  const callDoc = firestore.collection("calls").doc();
-  const offerCandidates = callDoc.collection("offerCandidates");
-  const answerCandidates = callDoc.collection("answerCandidates");
+  // Code for collecting ICE candidates below
+  const room = firestore.collection("rooms").doc();
+  const callerCandidates = room.collection("callerCandidates");
+  const answerCandidates = room.collection("answerCandidates");
 
-  callInput.value = callDoc.id;
+  roomInput.value = room.id;
 
   // Get candidates for caller, save to db
-  localPeerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-    event.candidate && offerCandidates.add(event.candidate.toJSON());
+  peerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+    if (!event.candidate) {
+      console.log("not found event.candidate");
+
+      return;
+    }
+
+    callerCandidates.add(event.candidate.toJSON());
   };
 
   // Create Offer
-  const offerDescription = await localPeerConnection?.createOffer();
-  await localPeerConnection?.setLocalDescription(offerDescription);
+  const offer = await peerConnection?.createOffer();
+  await peerConnection?.setLocalDescription(offer);
 
-  const offer = {
-    sdp: offerDescription!.sdp,
-    type: offerDescription!.type,
+  const offerRooms = {
+    offer: {
+      sdp: offer!.sdp,
+      type: offer!.type,
+    },
+    roomId: room.id,
   };
 
-  await callDoc.set({ offer });
+  await room.set(offerRooms);
+  console.log("roomId", room.id);
+
+  peerConnection!.ontrack = (event: RTCTrackEvent) => {
+    console.log("Get remote track", event.streams[0]);
+    // event.streams[0]
+    //   .getTracks()
+    //   .forEach((track) => remoteStream?.addTrack(track));
+
+    remoteVideo!.srcObject = event.streams[0];
+  };
 
   // Listen for remote answer
-  callDoc.onSnapshot((snapshot) => {
+  room.onSnapshot(async (snapshot) => {
     const data = snapshot.data();
-
-    if (!localPeerConnection?.currentRemoteDescription && data?.answer) {
-      localPeerConnection?.setRemoteDescription(
-        new RTCSessionDescription(data.answer)
-      );
+    if (peerConnection?.iceConnectionState !== "closed") {
+      if (!peerConnection?.currentRemoteDescription && data && data.answer) {
+        const rtcSessionDescription = new RTCSessionDescription(data.answer);
+        await peerConnection?.setRemoteDescription(rtcSessionDescription);
+      }
     }
   });
 
   // Listen for remote ICE candidates
   answerCandidates.onSnapshot((snapshot) => {
-    snapshot.docChanges().forEach((change) => {
+    snapshot.docChanges().forEach(async (change) => {
       if (change.type === "added") {
-        localPeerConnection?.addIceCandidate(
-          new RTCIceCandidate(change.doc.data())
-        );
+        const ice = new RTCIceCandidate(change.doc.data());
+        console.log(`Got new remote ICE candidate: ${ice}`);
+        await peerConnection?.addIceCandidate(ice);
       }
     });
   });
 }
 
 async function answer() {
-  const callId = callInput.value;
+  const roomId = roomInput.value;
+  peerConnection = new RTCPeerConnection(serversConfig);
 
-  const callDoc = firestore.collection("calls").doc(callId);
-  const offerCandidates = firestore.collection("offerCandidates");
-  const answerCandidates = firestore.collection("answerCandidates");
-
-  localPeerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-    event.candidate && answerCandidates.add(event.candidate.toJSON());
-  };
+  const room = firestore.collection("rooms").doc(roomId);
 
   // Fetch data, then set the offer & answer
-  const callData = (await callDoc.get()).data();
+  const roomSnapshot = await room.get();
 
-  const offerDescription = callData?.offer;
-  localPeerConnection?.setRemoteDescription(offerDescription);
-
-  const answerDescription = await localPeerConnection?.createAnswer();
-  localPeerConnection?.setLocalDescription(answerDescription);
-
-  const answer = {
-    type: answerDescription?.type,
-    sdp: answerDescription?.sdp,
-  };
-
-  await callDoc.update({ answer });
-
-  offerCandidates.onSnapshot((snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      if (change.type === "added") {
-        let data = change.doc.data();
-        localPeerConnection?.addIceCandidate(new RTCIceCandidate(data));
-      }
+  if (roomSnapshot.exists) {
+    localStream?.getTracks().forEach((track) => {
+      peerConnection?.addTrack(track, localStream!);
     });
-  });
+
+    const callerCandidates = room.collection("callerCandidates");
+    const answerCandidates = room.collection("answerCandidates");
+
+    // Collect ICE candidate
+    peerConnection!.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+      if (!event.candidate) {
+        console.log("Not found candidate");
+
+        return;
+      }
+
+      answerCandidates.add(event.candidate.toJSON());
+    };
+
+    peerConnection!.ontrack = (event: RTCTrackEvent) => {
+      console.log("Get remote track", event.streams[0]);
+      // event.streams[0]
+      //   .getTracks()
+      //   .forEach((track) => remoteStream?.addTrack(track));
+
+      remoteVideo!.srcObject = event.streams[0];
+    };
+    const offerRoom = roomSnapshot.data()?.offer;
+    console.log("Got offer", offerRoom);
+
+    await peerConnection.setRemoteDescription(
+      new RTCSessionDescription(offerRoom)
+    );
+
+    const answer = await peerConnection?.createAnswer();
+    peerConnection?.setLocalDescription(answer);
+
+    const answerRoom = {
+      answer: {
+        type: answer?.type,
+        sdp: answer?.sdp,
+      },
+    };
+
+    await room.update(answerRoom);
+
+    callerCandidates.onSnapshot((snapshot) => {
+      snapshot.docChanges().forEach(async (change) => {
+        if (change.type === "added") {
+          let ice = change.doc.data();
+          console.log(`Got new remote ICE candidate: ${ice}`);
+          await peerConnection?.addIceCandidate(new RTCIceCandidate(ice));
+        }
+      });
+    });
+  }
 }
 </script>
 
@@ -160,7 +221,7 @@ export default {};
     </div>
   </div>
   <video id="remoteVideo" autoplay playsinline class="video" />
-  <input type="text" name="callInput" v-model="callInput" />
+  <input type="text" name="roomInput" v-model="roomInput" />
   <button id="callButton" @click="answer()">Answer</button>
 </template>
 
